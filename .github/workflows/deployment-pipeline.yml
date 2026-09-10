@@ -48,7 +48,7 @@ jobs:
           docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }} .
           
       - name: Run Trivy Vulnerability Scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.24.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
           format: "table"
@@ -90,7 +90,7 @@ jobs:
             PREVIOUS_IMAGE=$(docker inspect --format "{{.Config.Image}}" app-container || echo "")
             
             echo "Authenticating to GHCR..."
-            echo "${{ secrets.DEPLOY_GHCR_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ secrets.DEPLOY_USER }} --password-stdin
+            echo "${{ secrets.DEPLOY_GHCR_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ secrets.DEPLOY_GHCR_USERNAME }} --password-stdin
             
             echo "Pulling $IMAGE"
             docker pull $IMAGE

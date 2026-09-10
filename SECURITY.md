@@ -6,7 +6,7 @@ The workflow applies least-privilege permissions and introduces controls intende
 The workflows explicitly restrict GitHub token scopes at the job level. By default, the workflow only receives `contents: read`. Only the `build-scan-publish` job receives `packages: write`, ensuring that code validation jobs cannot maliciously push artifacts.
 
 ## 2. Secret Handling
-Real credentials are never committed. Deployment connects using GitHub Secrets (`DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`). The SSH script securely passes a separate `DEPLOY_GHCR_TOKEN` into the remote host to authenticate `docker pull` without exposing the token in process arguments.
+Real credentials are never committed. Deployment connects using GitHub Secrets (`DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`). The SSH script securely passes a separate `DEPLOY_GHCR_USERNAME` and `DEPLOY_GHCR_TOKEN` into the remote host to authenticate `docker pull` without exposing the token in process arguments.
 
 ## 3. Vulnerability Scanning & SBOM
 * **Trivy:** Integrated into the pipeline to block deployments if `CRITICAL` or `HIGH` vulnerabilities are found in the OS or application libraries.

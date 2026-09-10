@@ -1,16 +1,23 @@
-# CI/CD Security
+# CI/CD Security Controls
 
-## Least Privilege Tokens
-The `GITHUB_TOKEN` is heavily restricted using the `permissions` block:
+The workflow applies least-privilege permissions and introduces controls intended to reduce supply-chain and deployment risks.
+
+## 1. Workflow Permissions
+The workflows explicitly restrict GitHub token scopes:
 ```yaml
 permissions:
   contents: read
   packages: write
-  security-events: write
 ```
+This ensures a compromised workflow cannot modify repository code or issue releases, granting only the ability to publish the container artifact.
 
-## Secret Management
-Production SSH keys and environment variables are strictly held in GitHub Repository Secrets. They are never echoed to the pipeline logs.
+## 2. Secret Handling
+Real credentials are never committed. Deployment connects using GitHub Secrets (`DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`). `GITHUB_TOKEN` is used natively for GHCR authentication.
 
-## Dependency Caching Integrity
-Node.js dependencies are cached, but `npm ci` is enforced over `npm install` to guarantee the `package-lock.json` is strictly adhered to, preventing unverified sub-dependency updates.
+## 3. Vulnerability Scanning & SBOM
+* **Trivy:** Integrated into the pipeline to block deployments if `CRITICAL` or `HIGH` vulnerabilities are found in the OS or application libraries.
+* **Syft:** Generates an SPDX JSON Software Bill of Materials archived as a pipeline artifact, providing a cryptographically verifiable manifest of everything inside the image.
+
+## 4. Immutable Artifacts
+Images are published with their Git commit SHA. This prevents the "latest" mutation attack where an adversary overwrites a rolling tag in the registry.
+

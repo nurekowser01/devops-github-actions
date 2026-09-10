@@ -1,0 +1,19 @@
+{
+  "name": "devops-github-actions",
+  "version": "1.0.0",
+  "description": "Production CI/CD Pipeline Demonstration",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "jest",
+    "lint": "eslint src/**/*.js tests/**/*.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "eslint": "^8.57.0",
+    "supertest": "^6.3.4"
+  }
+}

@@ -1,0 +1,138 @@
+name: Build, Publish & Deploy
+
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  ci-gates:
+    name: Quality Gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.1.1
+      - uses: actions/setup-node@v4.0.2
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+  build-scan-publish:
+    name: Immutable Artifact Pipeline
+    needs: ci-gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4.1.1
+        
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3.0.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.0.0
+        
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5.0.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=main
+            
+      - name: Build Image Locally
+        uses: docker/build-push-action@v5.0.0
+        with:
+          context: .
+          load: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          format: "table"
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          severity: "CRITICAL,HIGH"
+          
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0.15.8
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          
+      - name: Archive SBOM
+        uses: actions/upload-artifact@v4.3.1
+        with:
+          name: sbom
+          path: sbom.spdx.json
+          
+      - name: Push Immutable Artifact
+        uses: docker/build-push-action@v5.0.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  deploy:
+    name: Deploy & Verify
+    needs: build-scan-publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Deployment Scripts
+        uses: actions/checkout@v4.1.1
+        
+      - name: Execute Remote Deployment
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}"
+            PREVIOUS_IMAGE=$(docker inspect --format "{{.Config.Image}}" app-container || echo "")
+            
+            echo "Pulling $IMAGE"
+            docker pull $IMAGE
+            
+            echo "Deploying new container..."
+            docker stop app-container || true
+            docker rm app-container || true
+            docker run -d --name app-container -p 3000:3000 $IMAGE
+            
+            echo "Waiting for healthcheck..."
+            sleep 15
+            if ! curl -s http://localhost:3000/health | grep "healthy"; then
+              echo "Healthcheck FAILED. Rolling back to $PREVIOUS_IMAGE..."
+              docker stop app-container
+              docker rm app-container
+              if [ -n "$PREVIOUS_IMAGE" ]; then
+                docker run -d --name app-container -p 3000:3000 $PREVIOUS_IMAGE
+                echo "Rollback complete."
+              else
+                echo "No previous image found for rollback."
+              fi
+              exit 1
+            fi
+            
+            echo "Deployment verified and successful!"
+

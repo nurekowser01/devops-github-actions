@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   REGISTRY: ghcr.io
@@ -30,6 +29,9 @@ jobs:
     name: Immutable Artifact Pipeline
     needs: ci-gates
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4.1.1
@@ -40,27 +42,10 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-          
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3.0.0
-        
-      - name: Extract metadata (tags, labels)
-        id: meta
-        uses: docker/metadata-action@v5.0.0
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,format=long
-            type=raw,value=main
             
-      - name: Build Image Locally
-        uses: docker/build-push-action@v5.0.0
-        with:
-          context: .
-          load: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+      - name: Build Image
+        run: |
+          docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }} .
           
       - name: Run Trivy Vulnerability Scanner
         uses: aquasecurity/trivy-action@master
@@ -86,21 +71,14 @@ jobs:
           path: sbom.spdx.json
           
       - name: Push Immutable Artifact
-        uses: docker/build-push-action@v5.0.0
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
 
   deploy:
     name: Deploy & Verify
     needs: build-scan-publish
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Deployment Scripts
-        uses: actions/checkout@v4.1.1
-        
       - name: Execute Remote Deployment
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -111,6 +89,9 @@ jobs:
             IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}"
             PREVIOUS_IMAGE=$(docker inspect --format "{{.Config.Image}}" app-container || echo "")
             
+            echo "Authenticating to GHCR..."
+            echo "${{ secrets.DEPLOY_GHCR_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ secrets.DEPLOY_USER }} --password-stdin
+            
             echo "Pulling $IMAGE"
             docker pull $IMAGE
             
@@ -119,17 +100,31 @@ jobs:
             docker rm app-container || true
             docker run -d --name app-container -p 3000:3000 $IMAGE
             
-            echo "Waiting for healthcheck..."
-            sleep 15
-            if ! curl -s http://localhost:3000/health | grep "healthy"; then
-              echo "Healthcheck FAILED. Rolling back to $PREVIOUS_IMAGE..."
-              docker stop app-container
-              docker rm app-container
+            verify_health() {
+              for i in {1..6}; do
+                STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health || true)
+                if [ "$STATUS" = "200" ]; then return 0; fi
+                sleep 5
+              done
+              return 1
+            }
+            
+            echo "Verifying health..."
+            if ! verify_health; then
+              echo "Healthcheck FAILED. Initiating rollback to $PREVIOUS_IMAGE..."
+              docker stop app-container || true
+              docker rm app-container || true
+              
               if [ -n "$PREVIOUS_IMAGE" ]; then
                 docker run -d --name app-container -p 3000:3000 $PREVIOUS_IMAGE
-                echo "Rollback complete."
+                echo "Verifying rollback health..."
+                if ! verify_health; then
+                  echo "CRITICAL: Rollback healthcheck failed. Service is offline."
+                  exit 1
+                fi
+                echo "Rollback successful. Marking deployment as failed."
               else
-                echo "No previous image found for rollback."
+                echo "CRITICAL: No previous image found. Service is offline."
               fi
               exit 1
             fi
